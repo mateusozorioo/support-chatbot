@@ -1,48 +1,61 @@
-// Importa biblioteca para gerar QR code no terminal
+require("dotenv").config();
+
+// Importações da biblioteca do WhatsApp
 const qrcode = require("qrcode-terminal");
-// Importa componentes da biblioteca do WhatsApp Web
 const { Client, Buttons, List, MessageMedia } = require("whatsapp-web.js");
-// Cria nova instância do cliente WhatsApp
+
+// Importações do banco de dados
+const { testConnection } = require("./database/connection");
+const {
+  getUserConversation,
+  updateUserConversation,
+  resetUserConversation,
+  saveMessage,
+  createTicket,
+  markIncompleteConversations,
+} = require("./database/queries");
+
+// Configuração do cliente WhatsApp
 const client = new Client();
 
-// Event listener para capturar o QR code de autenticação
+// Testa conexão com banco na inicialização
+testConnection();
+
+// Event listeners do WhatsApp
 client.on("qr", (qr) => {
-  // Gera e exibe o QR code no terminal em formato pequeno
   qrcode.generate(qr, { small: true });
 });
 
-// Event listener disparado quando a conexão é estabelecida com sucesso
 client.on("ready", () => {
   console.log("Tudo certo! WhatsApp conectado.");
+
+  // Job para marcar conversas incompletas (executa a cada 30 minutos)
+  setInterval(markIncompleteConversations, 5 * 60 * 1000);
 });
 
-// Inicia a conexão do cliente WhatsApp
 client.initialize();
 
-// Função utilitária para criar delays (simula tempo de digitação)
+// Função utilitária para delays
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
-// Objeto global que armazena o estado de cada conversa por ID do usuário
-const userStates = {};
-
-// Enum com todos os possíveis estados da máquina de estados
+// Estados possíveis
 const STATES = {
-  INITIAL: "initial", // Estado inicial da conversa
-  WAITING_OK_START: "waiting_ok_start", // Aguardando confirmação para iniciar
-  WAITING_PROBLEM_TYPE: "waiting_problem_type", // Aguardando seleção do tipo de problema
-  WAITING_PROBLEM_DESCRIPTION: "waiting_problem_description", // Aguardando descrição do problema
-  WAITING_OK_QUESTIONS: "waiting_ok_questions", // Aguardando confirmação para fazer perguntas pessoais
-  ASKING_NAME: "asking_name", // Coletando nome do usuário
-  ASKING_SECTOR: "asking_sector", // Coletando setor do usuário
-  ASKING_COST_CENTER: "asking_cost_center", // Coletando centro de custo
-  ASKING_PHONE: "asking_phone", // Coletando telefone
-  ASKING_EMAIL: "asking_email", // Coletando email
-  ASKING_PATRIMONY: "asking_patrimony", // Coletando patrimônio dos equipamentos
-  WAITING_CONFIRMATION: "waiting_confirmation", // Aguardando confirmação dos dados
-  WAITING_RESTART_CHOICE: "waiting_restart_choice", // Aguardando escolha de onde recomeçar
+  INITIAL: "inicial",
+  WAITING_OK_START: "Esperando primeiro 'Ok'",
+  WAITING_PROBLEM_TYPE: "Esperando Tipo de Problema",
+  WAITING_PROBLEM_DESCRIPTION: "Esperando Descrição do Problema",
+  WAITING_OK_QUESTIONS: "Esperando 'Ok' para perguntas",
+  ASKING_NAME: "Perguntando Nome",
+  ASKING_SECTOR: "Perguntando Setor",
+  ASKING_COST_CENTER: "Perguntando Centro de Custo",
+  ASKING_PHONE: "Perguntando Telefone/Celular",
+  ASKING_EMAIL: "Perguntando email",
+  ASKING_PATRIMONY: "Perguntando Patrimônio(s)",
+  WAITING_CONFIRMATION: "Esperando confirmação dos dados",
+  WAITING_RESTART_CHOICE: "Esperando escolha de erro",
 };
 
-// Mapeamento dos números para tipos de problemas
+// Tipos de problemas
 const problemTypes = {
   1: "Computador/notebook",
   2: "Impressão",
@@ -52,365 +65,299 @@ const problemTypes = {
   6: "Outro",
 };
 
-// Event listener principal que processa todas as mensagens recebidas
+// Event listener principal - MODIFICADO PARA USAR BANCO
 client.on("message", async (msg) => {
-  // Filtra apenas mensagens de chats privados (ignora grupos)
+  // Filtra apenas mensagens privadas
   if (!msg.from.endsWith("@c.us")) return;
 
-  // Extrai ID único do usuário e conteúdo da mensagem
-  const userId = msg.from; //numero do usuário + @c.us para indicar mensagem privada
-  const userMessage = msg.body.trim(); // Conteúdo da mensagem (ex: "oi")
+  const userId = msg.from;
+  const userMessage = msg.body.trim();
 
-  // Inicializa estado do usuário se for primeira interação
-  if (!userStates[userId]) {
-    userStates[userId] = {
-      state: STATES.INITIAL, // Define estado inicial
-      data: {}, // Objeto para armazenar dados coletados
-    };
-  }
+  try {
+    // BUSCA ESTADO DO BANCO ao invés da memória
+    let userState = await getUserConversation(userId);
 
-  // Referência ao estado atual do usuário
-  const userState = userStates[userId];
-  // Obtém referência ao chat para enviar indicadores de digitação
-  const chat = await msg.getChat(); // msg.getChat() → Método da biblioteca que retorna o objeto do chat
+    // Se não existe, cria novo registro
+    if (!userState) {
+      userState = {
+        state: STATES.INITIAL,
+        data: {},
+        status: "aberto",
+      };
+    }
 
-  // Simula tempo de processamento e digitação
-  await delay(1500);
-  await chat.sendStateTyping(); // Mostra "digitando..."
-  await delay(1500);
+    // Salva mensagem do usuário no histórico
+    await saveMessage(userId, userMessage, "user_input", userState.state);
 
-  // Switch principal que controla o fluxo baseado no estado atual
-  switch (userState.state) {
-    case STATES.INITIAL:
-      // Mensagem de boas-vindas e apresentação do bot
-      await client.sendMessage(
-        msg.from, // msg.from -> é o destino da mensagem
-        "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da área de TI."
-      );
+    const chat = await msg.getChat();
 
-      // Simula digitação
-      await delay(1500);
-      await chat.sendStateTyping();
-      await delay(1500);
+    // Simula digitação
+    await delay(1500);
+    await chat.sendStateTyping();
+    await delay(1500);
 
-      // Mensagem de boas-vindas e apresentação do bot
-      await client.sendMessage(
-        msg.from, // msg.from -> é o destino da mensagem
-        "*TABORDA*\nPreciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes!"
-      );
+    // Variáveis para controlar mudanças
+    let newState = userState.state;
+    let newData = { ...userState.data };
+    let botResponse = "";
 
-      // Simula digitação
-      await delay(1500);
-      await chat.sendStateTyping();
-      await delay(1500);
-
-      // Mensagem de boas-vindas e apresentação do bot
-      await client.sendMessage(
-        msg.from, // msg.from -> é o destino da mensagem
-        "*TABORDA*\n*Lembre-se: Responda tudo de forma clara e objetiva*"
-      );
-
-      // Simula digitação
-      await delay(1500);
-      await chat.sendStateTyping();
-      await delay(1500);
-
-      // Mensagem de boas-vindas e apresentação do bot
-      await client.sendMessage(
-        msg.from, // msg.from -> é o destino da mensagem
-        "*TABORDA*\nResponda *Ok* para continuar"
-      );
-
-      // Transição para aguardar confirmação
-      userState.state = STATES.WAITING_OK_START;
-      break;
-
-    case STATES.WAITING_OK_START:
-      // Verifica se usuário digitou "ok" (case insensitive)
-      if (userMessage.toLowerCase() === "ok") {
-        // Apresenta menu de tipos de problemas
+    // Switch de estados (lógica mantida igual)
+    switch (userState.state) {
+      case STATES.INITIAL:
         await client.sendMessage(
           msg.from,
-          "*TABORDA*\nInforme seu tipo de problema:\n\n*Digite:*\n1 - para *Computador/notebook*\n2 - para *Impressão*\n3 - para *Internet*\n4 - para *Rede/Wifi*\n5 - para *Sistemas*\n6 - para *Outro*"
+          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do."
         );
-        // Transição para aguardar seleção do tipo do problema
-        userState.state = STATES.WAITING_PROBLEM_TYPE;
-      } else {
-        // Mensagem de erro para resposta inválida
-        await client.sendMessage(
-          msg.from,
-          "Por favor, responda 'Ok' para continuar."
-        );
-      }
-      break;
 
-    case STATES.WAITING_PROBLEM_TYPE:
-      // Valida se a entrada é um número entre 1 e 6
-      if (userMessage >= "1" && userMessage <= "6") {
-        const problemTypes = {
-          1: "Computador/notebook",
-          2: "Impressão",
-          3: "Internet",
-          4: "Rede/Wifi",
-          5: "Sistemas",
-          6: "Outros",
-        };
-
-        // Atribui o tipo de problema conforme a escolha
-        userState.data.problemType = problemTypes[userMessage];
-
-        // Solicita descrição detalhada
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nTipo de problema anotado ✅"
-        );
-        // Simula digitação
-        await delay(2000);
+        await delay(1500);
         await chat.sendStateTyping();
-        await delay(2000);
+        await delay(1500);
 
-        // Mensagem de boas-vindas e apresentação do bot
-        await client.sendMessage(
-          msg.from, // msg.from -> é o destino da mensagem
-          "*TABORDA*\nAgora, descreva com detalhes o seu problema. *Em uma única mensagem*"
-        );
-
-        // Transição para aguardar descrição
-        userState.state = STATES.WAITING_PROBLEM_DESCRIPTION;
-      } else {
-        // Mensagem de erro para seleção inválida
         await client.sendMessage(
           msg.from,
-          "*TABORDA*\nPor favor, digite apenas um número de 1 a 6 para selecionar o tipo de problema."
+          "*TABORDA*\nPreciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes!"
         );
-      }
-      break;
 
-    case STATES.WAITING_PROBLEM_DESCRIPTION:
-      // Valida se a descrição tem pelo menos 20 caracteres
-      if (userMessage.length > 20) {
-        // Armazena a descrição do problema
-        userState.data.problemDescription = userMessage;
-        // Informa que fará perguntas pessoais
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nMuito bem, problema anotado ✅"
-        );
-        // Simula digitação
-        await delay(2000);
+        await delay(1500);
         await chat.sendStateTyping();
-        await delay(2000);
+        await delay(1500);
 
-        // Mensagem de boas-vindas e apresentação do bot
-        await client.sendMessage(
-          msg.from, // msg.from -> é o destino da mensagem
-          "*TABORDA*\nAgora irei te fazer algumas perguntas para concluir a sua Solicitação de Serviço. *Digite OK* para continuar"
-        );
-        // Transição para aguardar confirmação das perguntas
-        userState.state = STATES.WAITING_OK_QUESTIONS;
-      } else {
-        // Mensagem de erro para descrição muito curta
         await client.sendMessage(
           msg.from,
-          "*TABORDA*\nA sua mensagem foi muito curta! Favor explicar com mais detalhes."
+          "*TABORDA*\n*Lembre-se: Responda tudo de forma clara e objetiva*"
         );
-      }
-      break;
 
-    case STATES.WAITING_OK_QUESTIONS:
-      // Verifica confirmação para iniciar perguntas pessoais
-      if (userMessage.toLowerCase() === "ok") {
-        // Primeira pergunta: nome completo
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nQual seu Nome Completo?"
-        );
-        // Transição para coleta do nome
-        userState.state = STATES.ASKING_NAME;
-      } else {
-        // Mensagem de erro para resposta inválida
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nPor favor, responda 'Ok' para continuar."
-        );
-      }
-      break;
+        await delay(1500);
+        await chat.sendStateTyping();
+        await delay(1500);
 
-    case STATES.ASKING_NAME:
-      // Armazena o nome informado
-      userState.data.name = userMessage; // userMessage -> toda mensagem do usuário
+        botResponse = "*TABORDA*\nResponda *Ok* para continuar";
+        await client.sendMessage(msg.from, botResponse);
 
-      // Próxima pergunta: setor
-      await client.sendMessage(
-        msg.from,
-        "*TABORDA*\nQual seu setor, área ou departamento?"
-      );
-      // Transição para coleta do setor
-      userState.state = STATES.ASKING_SECTOR;
-      break;
+        newState = STATES.WAITING_OK_START;
+        break;
 
-    case STATES.ASKING_SECTOR:
-      // Armazena o setor informado
-      userState.data.sector = userMessage;
+      case STATES.WAITING_OK_START:
+        if (userMessage.toLowerCase() === "ok") {
+          botResponse =
+            "*TABORDA*\nInforme seu tipo de problema:\n\n*Digite:*\n1 - para *Computador/notebook*\n2 - para *Impressão*\n3 - para *Internet*\n4 - para *Rede/Wifi*\n5 - para *Sistemas*\n6 - para *Outro*";
+          newState = STATES.WAITING_PROBLEM_TYPE;
+        } else {
+          botResponse = "Por favor, responda 'Ok' para continuar.";
+        }
+        await client.sendMessage(msg.from, botResponse);
+        break;
 
-      // Próxima pergunta: centro de custo
-      await client.sendMessage(
-        msg.from,
-        "*TABORDA*\nQual seu Centro de Custo?"
-      );
-      // Transição para coleta do centro de custo
-      userState.state = STATES.ASKING_COST_CENTER;
-      break;
+      case STATES.WAITING_PROBLEM_TYPE:
+        if (userMessage >= "1" && userMessage <= "6") {
+          newData.problemType = problemTypes[userMessage];
 
-    case STATES.ASKING_COST_CENTER:
-      // Armazena o centro de custo informado
-      userState.data.costCenter = userMessage;
+          await client.sendMessage(
+            msg.from,
+            "*TABORDA*\nTipo de problema anotado ✅"
+          );
 
-      // Próxima pergunta: telefone
-      await client.sendMessage(msg.from, "*TABORDA*\nQual seu telefone?");
-      // Transição para coleta do telefone
-      userState.state = STATES.ASKING_PHONE;
-      break;
+          await delay(2000);
+          await chat.sendStateTyping();
+          await delay(2000);
 
-    case STATES.ASKING_PHONE:
-      // Armazena o telefone informado
-      userState.data.phone = userMessage;
+          botResponse =
+            "*TABORDA*\nAgora, descreva com detalhes o seu problema. *Em uma única mensagem*";
+          await client.sendMessage(msg.from, botResponse);
 
-      // Próxima pergunta: email
-      await client.sendMessage(msg.from, "*TABORDA*\nQual seu e-mail?");
-      // Transição para coleta do email
-      userState.state = STATES.ASKING_EMAIL;
-      break;
+          newState = STATES.WAITING_PROBLEM_DESCRIPTION;
+        } else {
+          botResponse =
+            "*TABORDA*\nPor favor, digite apenas um número de 1 a 6 para selecionar o tipo de problema.";
+          await client.sendMessage(msg.from, botResponse);
+        }
+        break;
 
-    case STATES.ASKING_EMAIL:
-      // Armazena o email informado
-      userState.data.email = userMessage;
+      case STATES.WAITING_PROBLEM_DESCRIPTION:
+        if (userMessage.length > 20) {
+          newData.problemDescription = userMessage;
 
-      // Última pergunta: patrimônio dos equipamentos
-      await client.sendMessage(
-        msg.from,
-        "*TABORDA*\nQual o Patrimônio dos equipamentos (se houver)?"
-      );
-      // Transição para coleta do patrimônio
-      userState.state = STATES.ASKING_PATRIMONY;
-      break;
+          await client.sendMessage(
+            msg.from,
+            "*TABORDA*\nMuito bem, problema anotado ✅"
+          );
 
-    case STATES.ASKING_PATRIMONY:
-      // Armazena o patrimônio informado
-      userState.data.patrimony = userMessage;
+          await delay(2000);
+          await chat.sendStateTyping();
+          await delay(2000);
 
-      // Constrói mensagem de confirmação com todos os dados coletados
-      const confirmationMessage = `*TABORDA*
+          botResponse =
+            "*TABORDA*\nAgora irei te fazer algumas perguntas para concluir a sua Solicitação de Serviço. *Digite OK* para continuar";
+          await client.sendMessage(msg.from, botResponse);
+
+          newState = STATES.WAITING_OK_QUESTIONS;
+        } else {
+          botResponse =
+            "*TABORDA*\nA sua mensagem foi muito curta! Favor explicar com mais detalhes.";
+          await client.sendMessage(msg.from, botResponse);
+        }
+        break;
+
+      case STATES.WAITING_OK_QUESTIONS:
+        if (userMessage.toLowerCase() === "ok") {
+          botResponse = "*TABORDA*\nQual seu Nome Completo?";
+          newState = STATES.ASKING_NAME;
+        } else {
+          botResponse = "*TABORDA*\nPor favor, responda 'Ok' para continuar.";
+        }
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.ASKING_NAME:
+        newData.name = userMessage;
+        botResponse = "*TABORDA*\nQual seu setor, área ou departamento?";
+        newState = STATES.ASKING_SECTOR;
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.ASKING_SECTOR:
+        newData.sector = userMessage;
+        botResponse = "*TABORDA*\nQual seu Centro de Custo?";
+        newState = STATES.ASKING_COST_CENTER;
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.ASKING_COST_CENTER:
+        newData.costCenter = userMessage;
+        botResponse = "*TABORDA*\nQual seu telefone?";
+        newState = STATES.ASKING_PHONE;
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.ASKING_PHONE:
+        newData.phone = userMessage;
+        botResponse = "*TABORDA*\nQual seu e-mail?";
+        newState = STATES.ASKING_EMAIL;
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.ASKING_EMAIL:
+        newData.email = userMessage;
+        botResponse =
+          "*TABORDA*\nQual o Patrimônio dos equipamentos (se houver)?";
+        newState = STATES.ASKING_PATRIMONY;
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.ASKING_PATRIMONY:
+        newData.patrimony = userMessage;
+
+        const confirmationMessage = `*TABORDA*
 Ótimo! Para finalizar, por favor, confirme se os dados a seguir estão corretos:
 
-☑ *Nome:* ${userState.data.name}
-☑ *Setor:* ${userState.data.sector}
-☑ *Centro de Custo:* ${userState.data.costCenter}
-☑ *Telefone:* ${userState.data.phone}
-☑ *E-mail:* ${userState.data.email}
-☑ *Patrimônio:* ${userState.data.patrimony}
+☑ *Nome:* ${newData.name}
+☑ *Setor:* ${newData.sector}
+☑ *Centro de Custo:* ${newData.costCenter}
+☑ *Telefone:* ${newData.phone}
+☑ *E-mail:* ${newData.email}
+☑ *Patrimônio:* ${newData.patrimony}
 
-*Tipo do problema:* ${userState.data.problemType}
-*E o problema é:* ${userState.data.problemDescription}`;
+*Tipo do problema:* ${newData.problemType}
+*E o problema é:* ${newData.problemDescription}`;
 
-      // Próxima pergunta: mensagem de aviso de geração de solicitação
-      await client.sendMessage(
-        msg.from,
-        "*TABORDA*\n🔁 Gerando Solicitação de Serviço"
-      );
-
-      // Simula digitação antes de enviar resumo
-      await delay(2000);
-      await chat.sendStateTyping();
-      await delay(3500);
-
-      // Envia mensagem de confirmação
-      await client.sendMessage(msg.from, confirmationMessage);
-
-      // Simula digitação antes de enviar resumo
-      await delay(2000);
-      await chat.sendStateTyping();
-      await delay(3500);
-
-      // Próxima pergunta: mensagem de aviso de geração de solicitação
-      await client.sendMessage(
-        msg.from,
-        "*TABORDA*\n Podemos confirmar a abertura da solicitação?\n Digite *Sim* para confirmar e encerrar a conversa ou *Não* para alterar algum dado."
-      );
-
-      // Transição para aguardar confirmação final
-      userState.state = STATES.WAITING_CONFIRMATION;
-      break;
-
-    case STATES.WAITING_CONFIRMATION:
-      // Verifica se usuário confirmou os dados
-      if (userMessage.toLowerCase() === "sim") {
-        // Finaliza atendimento
-        await client.sendMessage(msg.from, "*TABORDA*\nConversa encerrada");
-        // Remove estado do usuário da memória (reset completo)
-        delete userStates[userId];
-      } else if (
-        // Verifica se usuário quer recomeçar (aceita "não" e "nao")
-        userMessage.toLowerCase() === "não" ||
-        userMessage.toLowerCase() === "nao" ||
-        userMessage.toLowerCase() === "Não" ||
-        userMessage.toLowerCase() === "Nao"
-      ) {
-        // Apresenta opções de onde recomeçar
         await client.sendMessage(
           msg.from,
-          "*TABORDA*\nAh, algum dado saiu errado. De onde deseja que eu comece novamente?\n\n*Digite:*\n1- Para que eu volte na pergunta do *Tipo de problema.*\n2- Para que eu volte na pergunta da *Descrição do problema.*\n3- Para que eu volte nas perguntas do *Seus dados e dos aparelhos problemáticos.*"
+          "*TABORDA*\n🔁 Gerando Solicitação de Serviço"
         );
-        // Transição para aguardar escolha de reinício
-        userState.state = STATES.WAITING_RESTART_CHOICE;
-      } else {
-        // Mensagem de erro para resposta inválida
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nPor favor, responda 'Sim' para confirmar ou 'Não' para alterar algum dado."
-        );
-      }
-      break;
 
-    case STATES.WAITING_RESTART_CHOICE:
-      // Processa escolha de onde recomeçar
-      if (userMessage === "1") {
-        // Volta para seleção do tipo de problema
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nInforme seu tipo de problema:\n\n*Digite:*\n1 - para *Computador/notebook*\n2 - para *Impressão*\n3 - para *Internet*\n4 - para *Rede/Wifi*\n5 - para *Sistemas*\n6 - para *Outro*"
-        );
-        userState.state = STATES.WAITING_PROBLEM_TYPE;
-      } else if (userMessage === "2") {
-        // Volta para descrição do problema
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nPor favor, com detalhes, descreva o seu problema. *Em uma única mensagem!*"
-        );
-        userState.state = STATES.WAITING_PROBLEM_DESCRIPTION;
-      } else if (userMessage === "3") {
-        // Volta para perguntas pessoais (nome)
-        await client.sendMessage(msg.from, "Qual seu Nome Completo?");
-        userState.state = STATES.ASKING_NAME;
-      } else {
-        // Mensagem de erro para opção inválida
-        await client.sendMessage(
-          msg.from,
-          "*TABORDA*\nPor favor, digite apenas 1, 2 ou 3 para escolher de onde recomeçar."
-        );
-      }
-      break;
+        await delay(2000);
+        await chat.sendStateTyping();
+        await delay(3500);
 
-    default:
-      // Caso padrão para qualquer estado não reconhecido
-      // Reinicia a conversa do início
-      userState.state = STATES.INITIAL;
-      await client.sendMessage(
-        msg.from,
-        "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da área de TI. Preciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes! *Lembre-se: Responda tudo de forma clara e objetiva.*\n\nResponda Ok para continuar"
-      );
-      // Define próximo estado
-      userState.state = STATES.WAITING_OK_START;
-      break;
+        await client.sendMessage(msg.from, confirmationMessage);
+
+        await delay(2000);
+        await chat.sendStateTyping();
+        await delay(3500);
+
+        botResponse =
+          "*TABORDA*\n Podemos confirmar a abertura da solicitação?\n Digite *Sim* para confirmar e encerrar a conversa ou *Não* para alterar algum dado.";
+        await client.sendMessage(msg.from, botResponse);
+
+        newState = STATES.WAITING_CONFIRMATION;
+        break;
+
+      case STATES.WAITING_CONFIRMATION:
+        if (userMessage.toLowerCase() === "sim") {
+          // CRIA TICKET NO BANCO
+          newData.status = "concluído";
+
+          const ticket = await createTicket(userId, newData);
+
+          botResponse = `*TABORDA*\nConversa encerrada.\n\n✅ Ticket #${ticket.ticketNumber} criado com sucesso!\n\nSua solicitação foi registrada e será analisada pela equipe de TI.`;
+          await client.sendMessage(msg.from, botResponse);
+
+          // RESETA CONVERSA DO BANCO
+          await resetUserConversation(userId);
+
+          // Salva mensagem final
+          await saveMessage(userId, botResponse, "bot_response", "FINALIZADO");
+
+          return; // Sai sem atualizar estado
+        } else if (
+          userMessage.toLowerCase() === "não" ||
+          userMessage.toLowerCase() === "nao"
+        ) {
+          botResponse =
+            "*TABORDA*\nAh, algum dado saiu errado. De onde deseja que eu comece novamente?\n\n*Digite:*\n1- Para que eu volte na pergunta do *Tipo de problema.*\n2- Para que eu volte na pergunta da *Descrição do problema.*\n3- Para que eu volte nas perguntas do *Seus dados e dos aparelhos problemáticos.*";
+          newState = STATES.WAITING_RESTART_CHOICE;
+        } else {
+          botResponse =
+            "*TABORDA*\nPor favor, responda 'Sim' para confirmar ou 'Não' para alterar algum dado.";
+        }
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      case STATES.WAITING_RESTART_CHOICE:
+        if (userMessage === "1") {
+          botResponse =
+            "*TABORDA*\nInforme seu tipo de problema:\n\n*Digite:*\n1 - para *Computador/notebook*\n2 - para *Impressão*\n3 - para *Internet*\n4 - para *Rede/Wifi*\n5 - para *Sistemas*\n6 - para *Outro*";
+          newState = STATES.WAITING_PROBLEM_TYPE;
+        } else if (userMessage === "2") {
+          botResponse =
+            "*TABORDA*\nPor favor, com detalhes, descreva o seu problema. *Em uma única mensagem!*";
+          newState = STATES.WAITING_PROBLEM_DESCRIPTION;
+        } else if (userMessage === "3") {
+          botResponse = "*TABORDA*\nQual seu Nome Completo?";
+          newState = STATES.ASKING_NAME;
+        } else {
+          botResponse =
+            "*TABORDA*\nPor favor, digite apenas 1, 2 ou 3 para escolher de onde recomeçar.";
+        }
+        await client.sendMessage(msg.from, botResponse);
+        break;
+
+      default:
+        newState = STATES.INITIAL;
+        botResponse =
+          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do . Preciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes! *Lembre-se: Responda tudo de forma clara e objetiva.*\n\nResponda Ok para continuar";
+        newState = STATES.WAITING_OK_START;
+        await client.sendMessage(msg.from, botResponse);
+        break;
+    }
+
+    // ATUALIZA ESTADO NO BANCO ao invés da memória
+    if (
+      newState !== userState.state ||
+      JSON.stringify(newData) !== JSON.stringify(userState.data)
+    ) {
+      await updateUserConversation(userId, newState, newData, "aberto");
+    }
+
+    // Salva resposta do bot no histórico
+    if (botResponse) {
+      await saveMessage(userId, botResponse, "bot_response", newState);
+    }
+  } catch (error) {
+    console.error("Erro ao processar mensagem:", error);
+    await client.sendMessage(
+      msg.from,
+      "*TABORDA*\nDesculpe, ocorreu um erro interno. Tente novamente em alguns instantes."
+    );
   }
 });
