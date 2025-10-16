@@ -63,8 +63,8 @@ async function updateUserConversation(userId, state, data, status = "aberto") {
   try {
     const [result] = await pool.execute(
       `INSERT INTO user_conversations 
-       (user_id, current_state, collected_data, status, updated_at) 
-       VALUES (?, ?, ?, ?, NOW())
+       (user_id, current_state, collected_data, status,created_at, updated_at) 
+       VALUES (?, ?, ?, ?, NOW(), NOW())
        ON DUPLICATE KEY UPDATE 
        current_state = VALUES(current_state),
        collected_data = VALUES(collected_data),
@@ -180,7 +180,7 @@ async function createTicket(userId, userData) {
         userData.costCenter || "", // Centro de custo
         userData.phone || "", // Telefone do usuário
         userData.email || "", // E-mail do usuário
-        userData.patrimony || "Não informado", // Patrimônio (ou "Não informado")
+        userData.patrimony || "", // Patrimônio (ou "Não informado")
         userData.problemType || "Não informado", // Tipo do problema relatado
         userData.problemDescription || "Não informado", // Descrição do problema
         userData.status, // Status dinâmico: "concluído" ou "inconcluído"
@@ -204,54 +204,76 @@ async function createTicket(userId, userData) {
 //Verifica se o campo updated_at está sem atualização há mais de 90 minutos.
 //Se sim → marca como inconcluído.
 
+
 async function markIncompleteConversations() {
   try {
-    // Buscar conversas abertas sem resposta há mais de 10 minutos
     const [conversations] = await pool.execute(
       `SELECT * FROM user_conversations 
         WHERE status = 'aberto' 
           AND current_state <> 'inicial'
-          AND updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`
+          AND updated_at < DATE_SUB(NOW(), INTERVAL 10 MINUTE)`
     );
 
+    console.log(`🔍 Encontradas ${conversations.length} conversas inativas`);
+
     for (const conv of conversations) {
-      // Parseia o JSON da coluna collected_data (se vazio ou inválido, vira objeto vazio)
+      console.log(`\n📋 Processando conversa do user: ${conv.user_id}`);
+      console.log(`   Estado: ${conv.current_state}`);
+      
       let collectedData = {};
-      try {
-        collectedData = conv.collected_data
-          ? JSON.parse(conv.collected_data)
-          : {};
-      } catch (err) {
-        console.error("Erro ao parsear collected_data:", err);
+      
+      // ✅ FIX PRINCIPAL: Trata quando MySQL retorna objeto direto
+      if (typeof conv.collected_data === 'object' && conv.collected_data !== null) {
+        // MySQL retornou como objeto (coluna tipo JSON)
+        collectedData = conv.collected_data;
+        console.log(`   ℹ️  Dados já vieram como objeto do MySQL`);
+      } 
+      else if (typeof conv.collected_data === 'string' && conv.collected_data !== '') {
+        // É string JSON que precisa ser parseada
+        try {
+          collectedData = JSON.parse(conv.collected_data);
+          console.log(`   ℹ️  Dados parseados de string JSON`);
+        } catch (err) {
+          console.error(`   ❌ Erro ao parsear JSON:`, err.message);
+          collectedData = {};
+        }
+      }
+      else {
+        console.log(`   ⚠️  collected_data vazio ou null`);
       }
 
+      console.log(`   📦 Dados extraídos:`, collectedData);
+
       const userData = {
-        name: collectedData.name || "Não informado",
-        sector: collectedData.sector || "Não informado",
-        costCenter: collectedData.costCenter || "Não informado",
-        phone: collectedData.phone || "Não informado",
-        email: collectedData.email || "Não informado",
-        patrimony: collectedData.patrimony || "Não informado",
+        name: collectedData.name || "",
+        sector: collectedData.sector || "",
+        costCenter: collectedData.costCenter || "",
+        phone: collectedData.phone || "",
+        email: collectedData.email || "",
+        patrimony: collectedData.patrimony || "",
         problemType: collectedData.problemType || "Não informado",
         problemDescription: collectedData.problemDescription || "Não informado",
         status: "inconcluído",
       };
 
-      // Cria o ticket inconcluído
-      await createTicket(conv.user_id, userData);
+      console.log(`   🎫 Criando ticket com:`, userData);
 
+      // Cria ticket e aguarda confirmação
+      const ticket = await createTicket(conv.user_id, userData);
+      console.log(`   ✅ Ticket #${ticket.ticketNumber} criado`);
+
+      // Reseta conversa
       await resetUserConversation(conv.user_id);
+      console.log(`   🔄 Conversa resetada\n`);
     }
 
     if (conversations.length > 0) {
-      console.log(
-        `🔄 ${conversations.length} conversas marcadas como inconcluídas e tickets criados`
-      );
+      console.log(`✅ TOTAL: ${conversations.length} conversas processadas`);
     }
 
     return conversations.length;
   } catch (error) {
-    console.error("Erro ao marcar conversas incompletas:", error);
+    console.error("❌ Erro ao marcar conversas incompletas:", error);
     throw error;
   }
 }

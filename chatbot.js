@@ -29,8 +29,8 @@ client.on("qr", (qr) => {
 client.on("ready", () => {
   console.log("Tudo certo! WhatsApp conectado.");
 
-  // Job para marcar conversas incompletas (executa a cada 30 minutos)
-  setInterval(markIncompleteConversations, 5 * 60 * 1000);
+  // Job para marcar conversas incompletas (executa a cada 5 minutos)
+  setInterval(markIncompleteConversations, 15 * 60 * 1000);
 });
 
 client.initialize();
@@ -79,18 +79,18 @@ client.on("message", async (msg) => {
 
     // Se não existe, cria novo registro
     if (!userState) {
-      userState = {
-        state: STATES.INITIAL,
-        data: {},
-        status: "aberto",
-      };
+      // Cria o registro no banco IMEDIATAMENTE
+      await updateUserConversation(userId, STATES.INITIAL, {}, "aberto");
+      
+      // Busca de volta para garantir consistência
+      userState = await getUserConversation(userId);
     }
-
-    // Salva mensagem do usuário no histórico
+    
+    // Salva mensagem do usuário e do bot no histórico
     await saveMessage(userId, userMessage, "user_input", userState.state);
-
+    
     const chat = await msg.getChat();
-
+    
     // Simula digitação
     await delay(1500);
     await chat.sendStateTyping();
@@ -106,7 +106,7 @@ client.on("message", async (msg) => {
       case STATES.INITIAL:
         await client.sendMessage(
           msg.from,
-          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do."
+          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do IDR-Paraná."
         );
 
         await delay(1500);
@@ -143,7 +143,7 @@ client.on("message", async (msg) => {
             "*TABORDA*\nInforme seu tipo de problema:\n\n*Digite:*\n1 - para *Computador/notebook*\n2 - para *Impressão*\n3 - para *Internet*\n4 - para *Rede/Wifi*\n5 - para *Sistemas*\n6 - para *Outro*";
           newState = STATES.WAITING_PROBLEM_TYPE;
         } else {
-          botResponse = "Por favor, responda 'Ok' para continuar.";
+          botResponse = "*TABORDA*\n*Por favor, responda 'Ok' para continuar.";
         }
         await client.sendMessage(msg.from, botResponse);
         break;
@@ -335,7 +335,7 @@ client.on("message", async (msg) => {
       default:
         newState = STATES.INITIAL;
         botResponse =
-          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do . Preciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes! *Lembre-se: Responda tudo de forma clara e objetiva.*\n\nResponda Ok para continuar";
+          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do IDR-Paraná . Preciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes! *Lembre-se: Responda tudo de forma clara e objetiva.*\n\nResponda Ok para continuar";
         newState = STATES.WAITING_OK_START;
         await client.sendMessage(msg.from, botResponse);
         break;
