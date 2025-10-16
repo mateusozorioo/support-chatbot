@@ -106,7 +106,7 @@ client.on("message", async (msg) => {
       case STATES.INITIAL:
         await client.sendMessage(
           msg.from,
-          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do IDR-Paraná."
+          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do ."
         );
 
         await delay(1500);
@@ -335,7 +335,7 @@ client.on("message", async (msg) => {
       default:
         newState = STATES.INITIAL;
         botResponse =
-          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do IDR-Paraná . Preciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes! *Lembre-se: Responda tudo de forma clara e objetiva.*\n\nResponda Ok para continuar";
+          "*TABORDA*\nOlá! Meu nome é Taborda! Sou o bot de suporte da GTI do . Preciso que você responda algumas perguntas para que o seu problema possa ser resolvido o quanto antes! *Lembre-se: Responda tudo de forma clara e objetiva.*\n\nResponda Ok para continuar";
         newState = STATES.WAITING_OK_START;
         await client.sendMessage(msg.from, botResponse);
         break;
